@@ -43,10 +43,30 @@ async function note(
   await store.addEvent(job.id, { level, role, kind, message, detail });
 }
 
-async function addCost(job: Job, inputTokens: number, outputTokens: number) {
+/**
+ * Per-role OpenRouter rates (USD per 1M tokens), mirrored from belief-compass
+ * `src/lib/forge/models.ts`. Kept here only to populate the cost ledger so the
+ * UI shows real spend rather than $0.00; Conviction remains the source of truth
+ * for pricing.
+ */
+const RATES: Record<"builder" | "challenger" | "escalation", { in: number; out: number }> = {
+  builder: { in: 0.27, out: 1.1 },
+  challenger: { in: 0.3, out: 1.2 },
+  escalation: { in: 15, out: 75 },
+};
+
+async function addCost(
+  job: Job,
+  role: "builder" | "challenger" | "escalation",
+  inputTokens: number,
+  outputTokens: number,
+) {
+  const r = RATES[role];
+  const usd = (inputTokens / 1e6) * r.in + (outputTokens / 1e6) * r.out;
   await store.update(job.id, (j) => {
     j.cost.inputTokens += inputTokens;
     j.cost.outputTokens += outputTokens;
+    j.cost.costUsd += usd;
   });
 }
 
@@ -164,7 +184,7 @@ export async function performBuilder(job: Job, instruction?: string): Promise<vo
     ];
 
     const res = await callModel(job.builderModel, messages, { maxTokens: 4096 });
-    await addCost(job, res.inputTokens, res.outputTokens);
+    await addCost(job, "builder", res.inputTokens, res.outputTokens);
     const plan = parsePlan(res.text);
     await store.update(job.id, (j) => {
       j.plan = plan;
@@ -206,7 +226,7 @@ export async function performChallenger(job: Job): Promise<void> {
     ];
 
     const res = await callModel(job.challengerModel, messages, { maxTokens: 3072, temperature: 0.2 });
-    await addCost(job, res.inputTokens, res.outputTokens);
+    await addCost(job, "challenger", res.inputTokens, res.outputTokens);
 
     const parsed = extractJson(res.text) as { objections?: unknown[] } | null;
     const rawList = Array.isArray(parsed?.objections) ? parsed!.objections : [];
