@@ -127,6 +127,29 @@ with the operation's intent. OpenCode's CLI flags move between versions; the bin
 (`OPENCODE_BIN`) and model prefix (`OPENCODE_MODEL_PREFIX`, default `openrouter/`) are the two
 knobs, centralised in `src/agent/opencode.ts`.
 
+### Config as code
+
+Railway's [config-as-code](https://docs.railway.com/reference/config-as-code) governs **build
+and deploy only**. Those live in [`railway.toml`](./railway.toml) — builder, Dockerfile path,
+watch patterns, the `/health` check, restart policy — and are applied automatically on deploy.
+
+Two things Railway deliberately keeps **out** of that file: **volumes** and **variables/secrets**.
+Committing secrets would be wrong anyway, so those are provisioned by
+[`scripts/railway-setup.sh`](./scripts/railway-setup.sh), which reads secrets from your shell
+(never the repo) and is safe to re-run:
+
+```bash
+railway link                        # once, to select project + service
+export FORGE_WORKER_SECRET=…        # long random string; matches Conviction
+export OPENROUTER_API_KEY=…
+export GITHUB_TOKEN=…               # fine-grained, scoped to belief-compass
+./scripts/railway-setup.sh          # creates the /workspace volume + sets vars
+```
+
+The variable list itself is documented as code in [`.env.example`](./.env.example). If you
+prefer the dashboard, paste those `KEY=VALUE` lines into the service's **Variables → Raw
+Editor** and add a Volume at `/workspace` — same result.
+
 ## Bring-up order
 
 Don't start with the full loop. Bring it up one green light at a time — this is also the order

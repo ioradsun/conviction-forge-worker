@@ -1,16 +1,31 @@
-# Railway service configuration.
+# Railway service configuration — config as code.
 #
-# Railway auto-detects the Dockerfile, but pinning it here makes the build
-# explicit and wires the health check to the unauthenticated /health endpoint.
-# Attach a Volume mounted at /workspace in the Railway dashboard (or via
-# `railway volume`) so job checkouts persist across deploys and restarts.
+# Railway's config-as-code covers BUILD and DEPLOY only. Two things it does NOT
+# support in this file, by design:
+#   • Volumes  — created via CLI/dashboard (see scripts/railway-setup.sh)
+#   • Variables/secrets — set via CLI/dashboard (see scripts/railway-setup.sh
+#     and .env.example). Never commit secrets.
+# Ref: https://docs.railway.com/reference/config-as-code
 
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+# Only rebuild when something that affects the image changes — docs/tests alone
+# don't trigger a redeploy.
+watchPatterns = ["src/**", "Dockerfile", "package.json", "bun.lock", "tsconfig.json"]
 
 [deploy]
+# The worker binds 0.0.0.0:$PORT and answers /health unauthenticated, so the
+# platform health check passes as soon as the process is up.
 healthcheckPath = "/health"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
+# Finish in-flight requests before an old instance is torn down on redeploy.
+drainingSeconds = "15"
+
+# Per-environment overrides use [environments.<name>.deploy]. Example: keep
+# Railway's ephemeral PR environments from opening real pull requests by
+# pointing them at a throwaway repo (uncomment and set in the dashboard):
+# [environments.pr.deploy]
+# restartPolicyType = "NEVER"
