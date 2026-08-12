@@ -59,7 +59,8 @@ ENV WORKSPACE_ROOT=/workspace
 ENV PORT=8080
 EXPOSE 8080
 
-# Persistent checkout space. On Railway, attach a Volume mounted at /workspace.
-VOLUME ["/workspace"]
+# Persistent checkout space lives on a Railway Volume mounted at /workspace
+# (attach it in the dashboard or via scripts/railway-setup.sh). Railway rejects
+# a Docker `VOLUME` instruction, so we deliberately do NOT declare one here.
 
 CMD ["bun", "run", "src/index.ts"]
