@@ -22,7 +22,8 @@ healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
 # Finish in-flight requests before an old instance is torn down on redeploy.
-drainingSeconds = "15"
+# (Number, not a string — Railway's validator rejects the quoted form.)
+drainingSeconds = 15
 
 # Per-environment overrides use [environments.<name>.deploy]. Example: keep
 # Railway's ephemeral PR environments from opening real pull requests by
