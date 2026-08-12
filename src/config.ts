@@ -1,0 +1,90 @@
+/**
+ * Configuration — read the environment once, in one place.
+ *
+ * Every other module imports `config` rather than touching `process.env`, so
+ * there is a single list of what the worker needs and a single registry of
+ * which values are secret. The logger scrubs exactly the strings named here,
+ * which is why nothing else is allowed to read a secret out of the environment
+ * on its own.
+ */
+
+const VERSION = "0.1.0";
+
+function env(name: string): string | undefined {
+  const v = process.env[name];
+  return v && v.length > 0 ? v : undefined;
+}
+
+function envOr(name: string, fallback: string): string {
+  return env(name) ?? fallback;
+}
+
+export type Config = {
+  version: string;
+  /** HTTP */
+  host: string;
+  port: number;
+  /** Auth — the bearer secret Conviction must present. */
+  workerSecret: string | null;
+  /** OpenRouter — OpenCode's model provider. */
+  openRouterApiKey: string | null;
+  /** GitHub — push + PR. */
+  githubToken: string | null;
+  /** Repository under work, e.g. "ioradsun/belief-compass". */
+  repoFullName: string;
+  repoUrl: string;
+  baseBranch: string;
+  /** Filesystem root for per-job workspaces. */
+  workspaceRoot: string;
+  /** Git identity for local commits/merges. */
+  gitAuthorName: string;
+  gitAuthorEmail: string;
+  /** External tools. */
+  openCodeBin: string;
+  gstackDir: string;
+};
+
+export const config: Config = {
+  version: VERSION,
+  host: envOr("HOST", "0.0.0.0"),
+  port: Number.parseInt(envOr("PORT", "8080"), 10),
+  workerSecret: env("FORGE_WORKER_SECRET") ?? null,
+  openRouterApiKey: env("OPENROUTER_API_KEY") ?? null,
+  githubToken: env("GITHUB_TOKEN") ?? null,
+  repoFullName: envOr("REPO_FULL_NAME", "ioradsun/belief-compass"),
+  get repoUrl() {
+    // REPO_URL overrides the derived GitHub URL — for a mirror, GHE host, or a
+    // local remote in tests. PR creation still targets REPO_FULL_NAME on github.com.
+    return env("REPO_URL") ?? `https://github.com/${this.repoFullName}`;
+  },
+  baseBranch: envOr("BASE_BRANCH", "main"),
+  workspaceRoot: envOr("WORKSPACE_ROOT", "/workspace"),
+  gitAuthorName: envOr("GIT_AUTHOR_NAME", "Conviction Forge"),
+  gitAuthorEmail: envOr("GIT_AUTHOR_EMAIL", "forge@conviction.company"),
+  openCodeBin: envOr("OPENCODE_BIN", "opencode"),
+  gstackDir: envOr("GSTACK_DIR", "/opt/gstack"),
+};
+
+/** Feature availability — used by /status and by honest degradation. */
+export const features = {
+  get auth() {
+    return Boolean(config.workerSecret);
+  },
+  get openRouter() {
+    return Boolean(config.openRouterApiKey);
+  },
+  get github() {
+    return Boolean(config.githubToken);
+  },
+};
+
+/**
+ * The exact secret strings the logger must never emit. Values only — never the
+ * names. Empty/short values are excluded so we don't accidentally scrub common
+ * substrings.
+ */
+export function secretValues(): string[] {
+  return [config.workerSecret, config.openRouterApiKey, config.githubToken].filter(
+    (v): v is string => typeof v === "string" && v.length >= 6,
+  );
+}

@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+bun.lockb
+
+# Build / runtime
+dist/
+*.log
+
+# Local environment — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# Job workspaces (created at runtime under WORKSPACE_ROOT; also ignored if a
+# developer points WORKSPACE_ROOT at the repo during local testing)
+workspace/
+/workspace/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

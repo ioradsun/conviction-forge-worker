@@ -1,0 +1,10 @@
+.git
+node_modules
+dist
+*.log
+.env
+.env.*
+workspace
+/workspace
+README.md
+.github
