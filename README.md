@@ -150,6 +150,25 @@ The variable list itself is documented as code in [`.env.example`](./.env.exampl
 prefer the dashboard, paste those `KEY=VALUE` lines into the service's **Variables → Raw
 Editor** and add a Volume at `/workspace` — same result.
 
+## Autonomous mode
+
+By default (`FORGE_AUTOPILOT=on`) the worker drives its own pipeline after the clone,
+pausing only at the human gates:
+
+- **FAST:** plan → implement → verify → review → qa → *await approval* → (human opens PR)
+- **DEBATE / CRITICAL:** plan → debate → *await plan lock* → implement → verify → review →
+  (security) → qa → *await approval* → (human opens PR)
+
+It never locks its own plan and never opens the PR — those stay human actions
+(`POST /jobs/:id/lock`, `POST /jobs/:id/pr`). Set `FORGE_AUTOPILOT=off` to drive every step
+by hand instead.
+
+Progress is written to the job and exposed by `GET /jobs/:id`. The worker cannot reach
+Conviction's database, so for the Forge **UI** to reflect this live, Conviction must poll
+`GET /jobs/:id` and mirror status / plan / checks into its own tables — otherwise the work
+still happens (visible in the worker's logs and `GET /jobs/:id`) but the UI stays where it
+was when the job was created.
+
 ## Bring-up order
 
 Don't start with the full loop. Bring it up one green light at a time — this is also the order

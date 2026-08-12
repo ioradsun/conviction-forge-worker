@@ -81,6 +81,7 @@ beforeAll(async () => {
   process.env.REPO_FULL_NAME = "ioradsun/belief-compass";
   process.env.REPO_URL = remoteDir;
   process.env.BASE_BRANCH = "main";
+  process.env.FORGE_AUTOPILOT = "off"; // drive phases explicitly in these tests
   delete process.env.OPENROUTER_API_KEY;
   delete process.env.GITHUB_TOKEN;
 
@@ -241,6 +242,52 @@ describe("diff, preview", () => {
     const { json } = await call("GET", `/jobs/${workerJobId}/preview`);
     expect(json).toHaveProperty("url");
     expect(json.url).toBeNull();
+  });
+});
+
+describe("autopilot (self-driving)", () => {
+  async function freshJob(mode: string, slug: string) {
+    const { json } = await call("POST", "/jobs", {
+      body: {
+        jobId: `auto-${slug}`,
+        request: `autopilot ${mode} test`,
+        mode,
+        branchName: `forge/${slug}-auto1234`,
+        verificationProfile: mode === "CRITICAL" ? "money" : mode === "FAST" ? "ui" : "feed",
+        builderModel: "x/y",
+        challengerModel: "x/y",
+        escalationModel: "x/y",
+      },
+    });
+    const id = json.workerJobId as string;
+    await waitFor(id, (d) => d.status === "ready" || d.status === "failed");
+    return id;
+  }
+
+  test("halts honestly when the Builder produces no plan (no key)", async () => {
+    const { autopilotFromClone } = await import("../src/pipeline.ts");
+    const id = await freshJob("FAST", "halt-noplan");
+    await autopilotFromClone(id);
+    const { json } = await call("GET", `/jobs/${id}`);
+    const detail = json.detail as { events: { kind: string }[]; plan: unknown };
+    const kinds = detail.events.map((e) => e.kind);
+    expect(kinds).toContain("autopilot.start");
+    expect(kinds).toContain("autopilot.halt");
+    expect(detail.plan).toBeNull();
+  });
+
+  test("DEBATE drives to the plan-lock gate once a plan exists", async () => {
+    const { autopilotFromClone } = await import("../src/pipeline.ts");
+    const id = await freshJob("DEBATE", "debate-gate");
+    // Stand in for a Builder that produced a plan (no OpenRouter key in this env).
+    await store.update(id, (j) => {
+      j.plan = { summary: "seeded plan" };
+    });
+    await autopilotFromClone(id);
+    const { json } = await call("GET", `/jobs/${id}`);
+    const detail = json.detail as { phase: string; events: { kind: string }[] };
+    expect(detail.events.map((e) => e.kind)).toContain("autopilot.awaiting_lock");
+    expect(detail.phase).toBe("lock");
   });
 });
 

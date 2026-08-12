@@ -42,7 +42,15 @@ export type Config = {
   /** External tools. */
   openCodeBin: string;
   gstackDir: string;
+  /** Self-driving mode: drive the pipeline to the next human gate automatically. */
+  autopilot: boolean;
 };
+
+function boolEnv(name: string, fallback: boolean): boolean {
+  const v = env(name);
+  if (v === undefined) return fallback;
+  return !["off", "false", "0", "no"].includes(v.toLowerCase());
+}
 
 export const config: Config = {
   version: VERSION,
@@ -63,6 +71,7 @@ export const config: Config = {
   gitAuthorEmail: envOr("GIT_AUTHOR_EMAIL", "forge@conviction.company"),
   openCodeBin: envOr("OPENCODE_BIN", "opencode"),
   gstackDir: envOr("GSTACK_DIR", "/opt/gstack"),
+  autopilot: boolEnv("FORGE_AUTOPILOT", true),
 };
 
 /** Feature availability — used by /status and by honest degradation. */

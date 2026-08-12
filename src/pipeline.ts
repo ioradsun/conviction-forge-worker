@@ -521,3 +521,74 @@ async function failStep(job: Job, kind: string, err: unknown): Promise<void> {
   await note(job, "error", "system", kind, message);
   log.error("pipeline step failed", { job: job.id, kind, error: message });
 }
+
+/* ── autopilot ─────────────────────────────────────────────────────────────
+ * Self-driving mode. After the clone, the worker walks its own pipeline to the
+ * next human gate instead of waiting to be told. It pauses exactly where a
+ * person is required — the plan lock (DEBATE/CRITICAL) and the final approval
+ * before a pull request — and never opens the PR itself.
+ *
+ * The phases are the same `performX` functions the endpoints call, awaited in
+ * sequence; between each we re-read the job (a phase mutates it) and stop early
+ * if it failed or was cancelled.
+ */
+
+function alive(jobId: string): boolean {
+  const j = store.get(jobId);
+  return !!j && j.status !== "failed" && j.status !== "cancelled" && j.status !== "completed";
+}
+
+/** From a fresh clone: plan, then debate (DEBATE/CRITICAL) or build (FAST). */
+export async function autopilotFromClone(jobId: string): Promise<void> {
+  const job = store.get(jobId);
+  if (!job || job.status !== "ready") return; // only proceed from a successful clone
+  await note(job, "info", "system", "autopilot.start", "Self-driving: Builder is analysing the repository.");
+
+  await performBuilder(store.get(jobId)!);
+  if (!alive(jobId)) return;
+  if (!store.get(jobId)!.plan) {
+    await note(store.get(jobId)!, "warn", "system", "autopilot.halt", "Halted: no plan was produced (is OPENROUTER_API_KEY set?).");
+    return;
+  }
+
+  if (store.get(jobId)!.mode === "FAST") {
+    await autopilotBuild(jobId); // no debate, no lock gate
+    return;
+  }
+
+  // DEBATE / CRITICAL — attack the plan, then wait for a human to lock it.
+  await performChallenger(store.get(jobId)!);
+  if (!alive(jobId)) return;
+  await store.advance(jobId, "ready", "lock");
+  await note(store.get(jobId)!, "info", "human", "autopilot.awaiting_lock", "Debate complete — awaiting human plan lock before implementing.");
+}
+
+/** After the plan is locked (or immediately, for FAST): implement → verify → review → qa. */
+export async function autopilotBuild(jobId: string): Promise<void> {
+  if (!alive(jobId)) return;
+  await performImplementation(store.get(jobId)!);
+  if (!alive(jobId)) return;
+
+  if (!store.get(jobId)!.diffSummary || store.get(jobId)!.diffSummary!.filesChanged === 0) {
+    await note(store.get(jobId)!, "warn", "system", "autopilot.halt", "Halted: implementation produced no changes.");
+    await store.advance(jobId, "ready_for_human", "human");
+    return;
+  }
+
+  await performChecks(store.get(jobId)!, store.get(jobId)!.verificationProfile);
+  if (!alive(jobId)) return;
+
+  await performReview(store.get(jobId)!, "engineering review");
+  if (!alive(jobId)) return;
+
+  if (store.get(jobId)!.mode === "CRITICAL") {
+    await performReview(store.get(jobId)!, "cso"); // security review
+    if (!alive(jobId)) return;
+  }
+
+  await performQa(store.get(jobId)!);
+  if (!alive(jobId)) return;
+
+  await store.advance(jobId, "ready_for_human", "human");
+  await note(store.get(jobId)!, "success", "human", "autopilot.ready", "Ready for human review — approve to open the pull request.");
+}

@@ -25,6 +25,8 @@ import type { Job } from "./jobs/types.ts";
 import { assertSafeBranch, computeDiff } from "./git/repo.ts";
 import { run } from "./shell.ts";
 import {
+  autopilotBuild,
+  autopilotFromClone,
   checkResults,
   performBuilder,
   performChallenger,
@@ -159,7 +161,13 @@ export function buildRouter(): Router {
         kind: "job.created",
         message: `Job accepted — ${job.mode} mode, ${job.verificationProfile} profile.`,
       });
-      spawn(performClone(job));
+      // Clone, then (in self-driving mode) drive the pipeline to the first
+      // human gate. Manual mode stops at a ready checkout, awaiting step calls.
+      spawn(
+        config.autopilot
+          ? performClone(job).then(() => autopilotFromClone(job.id))
+          : performClone(job),
+      );
       return json({ workerJobId } satisfies { workerJobId: string });
     }),
   );
@@ -226,6 +234,11 @@ export function buildRouter(): Router {
         kind: "plan.locked",
         message: "Plan locked.",
       });
+      // In self-driving mode, a human lock resumes the pipeline: implement →
+      // verify → review → qa, up to the final approval gate.
+      if (config.autopilot && found.job.mode !== "FAST") {
+        spawn(autopilotBuild(found.job.id));
+      }
       return ok();
     }),
   );
