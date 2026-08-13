@@ -121,6 +121,45 @@ describe("auth", () => {
   });
 });
 
+describe("discovery", () => {
+  test("POST /discovery/context needs a bearer", async () => {
+    const { status } = await call("POST", "/discovery/context", {
+      auth: false,
+      body: { request: "x" },
+    });
+    expect(status).toBe(401);
+  });
+
+  test("POST /discovery/context requires a request", async () => {
+    const { status } = await call("POST", "/discovery/context", { body: {} });
+    expect(status).toBe(400);
+  });
+
+  test("POST /discovery/context reads the repo and returns a digest", async () => {
+    const { status, json } = await call("POST", "/discovery/context", {
+      body: { request: "let people challenge a specific person directly" },
+    });
+    expect(status).toBe(200);
+    const digest = json.digest as Record<string, unknown>;
+    expect(typeof digest.tree).toBe("string");
+    expect(Array.isArray(digest.files)).toBe(true);
+    expect(Array.isArray(digest.relevantPaths)).toBe(true);
+  });
+
+  test("POST /discovery/turn degrades honestly without OpenRouter", async () => {
+    const { status, json } = await call("POST", "/discovery/turn", {
+      body: {
+        request: "x",
+        model: "m",
+        digest: { tree: "", files: [], relevantPaths: [] },
+        messages: [],
+      },
+    });
+    expect(status).toBe(503);
+    expect(json.ok).toBe(false);
+  });
+});
+
 describe("GET /status", () => {
   test("returns version and workspace", async () => {
     const { status, json } = await call("GET", "/status");

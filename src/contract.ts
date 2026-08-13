@@ -136,3 +136,58 @@ export function isProfileKey(v: unknown): v is VerificationProfileKey {
 export function isGstackOperation(v: unknown): v is GstackOperation {
   return typeof v === "string" && (GSTACK_OPERATIONS as readonly string[]).includes(v);
 }
+
+/* ── Discovery — the pre-job planning session ───────────────────────────────
+ * The office-hours conversation that turns a one-line request into a structured
+ * brief before any job exists. The session's state lives in the app; the worker
+ * only reads the repo once (the digest) and produces each AI turn. These shapes
+ * cross the wire, so the app mirrors them.
+ */
+
+/** A one-time read of belief-compass, seeding the conversation with real code. */
+export type RepoDigest = {
+  /** A partial source-file tree, newline-separated paths. */
+  tree: string;
+  /** The files most relevant to the request, with truncated contents. */
+  files: { path: string; excerpt: string }[];
+  /** The relevant paths on their own, for quick reference. */
+  relevantPaths: string[];
+};
+
+/** The living brief the conversation builds — structured so agents can act on it. */
+export type DiscoveryPlan = {
+  title: string;
+  problem: string;
+  behavior: string;
+  edgeCases: string[];
+  constraints: string[];
+  acceptanceCriteria: string[];
+  relevantFiles: string[];
+  openQuestions: string[];
+};
+
+/** One message in the session. `ai` is the CTO; `you` is the business. */
+export type DiscoveryMessage = {
+  role: "ai" | "you";
+  content: string;
+  suggestedAnswers?: string[];
+};
+
+/** Body of `POST /discovery/turn` → the CTO's next move plus the updated plan. */
+export type DiscoveryTurnResult = {
+  message: string;
+  suggestedAnswers: string[];
+  plan: DiscoveryPlan;
+  ready: boolean;
+};
+
+export const EMPTY_DISCOVERY_PLAN: DiscoveryPlan = {
+  title: "",
+  problem: "",
+  behavior: "",
+  edgeCases: [],
+  constraints: [],
+  acceptanceCriteria: [],
+  relevantFiles: [],
+  openQuestions: [],
+};
