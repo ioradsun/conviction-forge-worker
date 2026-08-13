@@ -40,7 +40,9 @@ export async function callModel(
 
   const started = Date.now();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 120_000);
+  // Reasoning calls over repo context are slow; these run in background phases,
+  // not under the 60s request cap, so give them real room.
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 240_000);
 
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {

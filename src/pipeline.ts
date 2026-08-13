@@ -248,7 +248,11 @@ export async function performChallenger(job: Job): Promise<void> {
       { model: res.modelId },
     );
   } catch (err) {
-    await failStep(job, "challenger.failed", err);
+    // The debate is advisory. A failed or timed-out round must never fail the
+    // job — especially once the plan is locked and implementation is underway.
+    const message = err instanceof Error ? err.message : String(err);
+    await store.update(job.id, (j) => settle(j, "ready", "debate"));
+    await note(job, "warn", "challenger", "debate.failed", `Challenger round did not complete: ${message}`);
   } finally {
     store.markStopped(job.id);
   }
@@ -585,36 +589,52 @@ export async function autopilotFromClone(jobId: string): Promise<void> {
   // DEBATE / CRITICAL — attack the plan, then wait for a human to lock it.
   await performChallenger(store.get(jobId)!);
   if (!alive(jobId)) return;
-  await store.advance(jobId, "ready", "lock");
-  await note(store.get(jobId)!, "info", "human", "autopilot.awaiting_lock", "Debate complete — awaiting human plan lock before implementing.");
+  // A human may have locked the plan while the debate was still running. If so,
+  // continue into the build now (the /lock endpoint deliberately did NOT start
+  // it, to avoid debating and implementing at the same time); otherwise pause.
+  if (store.get(jobId)!.planLockedAt) {
+    await autopilotBuild(jobId);
+  } else {
+    await store.advance(jobId, "ready", "lock");
+    await note(store.get(jobId)!, "info", "human", "autopilot.awaiting_lock", "Debate complete — awaiting human plan lock before implementing.");
+  }
 }
+
+/** Guards the build phase so a lock and a finishing debate can't both start it. */
+const building = new Set<string>();
 
 /** After the plan is locked (or immediately, for FAST): implement → verify → review → qa. */
 export async function autopilotBuild(jobId: string): Promise<void> {
-  if (!alive(jobId)) return;
-  await performImplementation(store.get(jobId)!);
-  if (!alive(jobId)) return;
-
-  if (!store.get(jobId)!.diffSummary || store.get(jobId)!.diffSummary!.filesChanged === 0) {
-    await note(store.get(jobId)!, "warn", "system", "autopilot.halt", "Halted: implementation produced no changes.");
-    await store.advance(jobId, "ready_for_human", "human");
-    return;
-  }
-
-  await performChecks(store.get(jobId)!, store.get(jobId)!.verificationProfile);
-  if (!alive(jobId)) return;
-
-  await performReview(store.get(jobId)!, "engineering review");
-  if (!alive(jobId)) return;
-
-  if (store.get(jobId)!.mode === "CRITICAL") {
-    await performReview(store.get(jobId)!, "cso"); // security review
+  if (building.has(jobId)) return; // already implementing — never run it twice
+  building.add(jobId);
+  try {
     if (!alive(jobId)) return;
+    await performImplementation(store.get(jobId)!);
+    if (!alive(jobId)) return;
+
+    if (!store.get(jobId)!.diffSummary || store.get(jobId)!.diffSummary!.filesChanged === 0) {
+      await note(store.get(jobId)!, "warn", "system", "autopilot.halt", "Halted: implementation produced no changes.");
+      await store.advance(jobId, "ready_for_human", "human");
+      return;
+    }
+
+    await performChecks(store.get(jobId)!, store.get(jobId)!.verificationProfile);
+    if (!alive(jobId)) return;
+
+    await performReview(store.get(jobId)!, "engineering review");
+    if (!alive(jobId)) return;
+
+    if (store.get(jobId)!.mode === "CRITICAL") {
+      await performReview(store.get(jobId)!, "cso"); // security review
+      if (!alive(jobId)) return;
+    }
+
+    await performQa(store.get(jobId)!);
+    if (!alive(jobId)) return;
+
+    await store.advance(jobId, "ready_for_human", "human");
+    await note(store.get(jobId)!, "success", "human", "autopilot.ready", "Ready for human review — approve to open the pull request.");
+  } finally {
+    building.delete(jobId);
   }
-
-  await performQa(store.get(jobId)!);
-  if (!alive(jobId)) return;
-
-  await store.advance(jobId, "ready_for_human", "human");
-  await note(store.get(jobId)!, "success", "human", "autopilot.ready", "Ready for human review — approve to open the pull request.");
 }

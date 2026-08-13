@@ -235,8 +235,11 @@ export function buildRouter(): Router {
         message: "Plan locked.",
       });
       // In self-driving mode, a human lock resumes the pipeline: implement →
-      // verify → review → qa, up to the final approval gate.
-      if (config.autopilot && found.job.mode !== "FAST") {
+      // verify → review → qa, up to the final approval gate. But only start it
+      // if nothing is still running — if the debate is in flight, the lock is
+      // recorded (planLockedAt) and autopilotFromClone continues into the build
+      // when the debate finishes, so we never debate and implement at once.
+      if (config.autopilot && found.job.mode !== "FAST" && !store.isRunning(found.job.id)) {
         spawn(autopilotBuild(found.job.id));
       }
       return ok();

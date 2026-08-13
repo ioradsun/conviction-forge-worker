@@ -289,6 +289,21 @@ describe("autopilot (self-driving)", () => {
     expect(detail.events.map((e) => e.kind)).toContain("autopilot.awaiting_lock");
     expect(detail.phase).toBe("lock");
   });
+
+  test("continues into the build when the plan was locked during the debate", async () => {
+    const { autopilotFromClone } = await import("../src/pipeline.ts");
+    const id = await freshJob("DEBATE", "lock-during");
+    await store.update(id, (j) => {
+      j.plan = { summary: "seeded plan" };
+      j.planLockedAt = new Date().toISOString(); // human locked while the debate ran
+    });
+    await autopilotFromClone(id);
+    const { json } = await call("GET", `/jobs/${id}`);
+    const detail = json.detail as { phase: string; events: { kind: string }[] };
+    // It should NOT stop at the lock gate — it proceeds into the build phase.
+    expect(detail.events.map((e) => e.kind)).not.toContain("autopilot.awaiting_lock");
+    expect(detail.phase).toBe("human"); // reached the final human-approval gate
+  });
 });
 
 describe("POST /jobs/:id/pr without a token fails honestly as JSON", () => {
