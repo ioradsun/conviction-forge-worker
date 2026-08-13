@@ -1,6 +1,6 @@
 # Conviction Forge Worker — container image for Railway.
 #
-# Bun runtime + git + OpenCode (+ optional gstack). Bun runs the TypeScript
+# Bun runtime + git + OpenCode + gstack. Bun runs the TypeScript
 # source directly, so there is no separate build/transpile step to drift from
 # the source. The service listens on 0.0.0.0:$PORT and keeps job checkouts under
 # /workspace, which Railway mounts as a persistent Volume.
@@ -25,20 +25,25 @@ ENV PATH="/root/.opencode/bin:${PATH}"
 RUN curl -fsSL https://opencode.ai/install | bash \
     || echo "WARNING: OpenCode install failed; agent phases will report unavailable."
 
-# gstack — optional, hosted on OpenCode. Supply its source at build time:
-#   docker build --build-arg GSTACK_REPO=<git-url> [--build-arg GSTACK_REF=<ref>]
-# When omitted, the worker's gstack operations run directly through OpenCode.
-ARG GSTACK_REPO=""
+# gstack — the engineering skills, installed into OpenCode's global skill dir
+# (~/.config/opencode/skills/gstack-*) via its OpenCode host setup. This is what
+# turns OpenCode into the "engineering team": /office-hours, /autoplan, /review,
+# /cso, /qa, /ship, … Non-fatal so a browser-build hiccup can't block the deploy;
+# the skills still register. Override the source with --build-arg GSTACK_REF=<ref>.
+ARG GSTACK_REPO="https://github.com/garrytan/gstack"
 ARG GSTACK_REF="main"
 ENV GSTACK_DIR="/opt/gstack"
-RUN if [ -n "$GSTACK_REPO" ]; then \
-      { git clone --depth 1 --branch "$GSTACK_REF" "$GSTACK_REPO" "$GSTACK_DIR" \
-        && cd "$GSTACK_DIR" \
-        && ./setup --host opencode ; } \
-      || echo "WARNING: gstack setup failed; review/qa run via OpenCode directly." ; \
-    else \
-      echo "No GSTACK_REPO provided — gstack operations run via OpenCode directly." ; \
-    fi
+RUN { git clone --single-branch --depth 1 --branch "$GSTACK_REF" "$GSTACK_REPO" "$GSTACK_DIR" \
+      && cd "$GSTACK_DIR" \
+      && ./setup --host opencode ; } \
+    || echo "WARNING: gstack setup incomplete; some skills may be unavailable at runtime."
+
+# OpenCode provider config, GLOBAL so it sits beside the gstack skills (the same
+# ~/.config/opencode OpenCode reads at runtime). The OpenRouter key is referenced
+# by env name — never baked into the image.
+RUN mkdir -p /root/.config/opencode \
+    && printf '%s\n' '{ "$schema": "https://opencode.ai/config.json", "provider": { "openrouter": { "options": { "apiKey": "{env:OPENROUTER_API_KEY}" } } } }' \
+       > /root/.config/opencode/opencode.json
 
 WORKDIR /app
 

@@ -25,7 +25,7 @@ import { run } from "./shell.ts";
 import { store } from "./jobs/store.ts";
 import type { Job, Plan, WorkerJobStatus } from "./jobs/types.ts";
 import { callModel, extractJson, openRouterConfigured } from "./agent/openrouter.ts";
-import { openCodeAvailable, runOpenCode } from "./agent/opencode.ts";
+import { openCodeAvailable, runGstack } from "./agent/opencode.ts";
 import { runGstackOperation } from "./agent/gstack.ts";
 import { commitsAhead, computeDiff, prepareWorkspace, pushBranch, stageAndCommit } from "./git/repo.ts";
 import { createPullRequest } from "./git/github.ts";
@@ -316,17 +316,18 @@ export async function performImplementation(job: Job): Promise<void> {
     if (!openRouterConfigured()) return void (await notConfigured(job, "OPENROUTER_API_KEY is not configured — implementation cannot run."));
     if (!(await openCodeAvailable())) return void (await notConfigured(job, "OpenCode is not available on the worker — implementation cannot run."));
 
-    const prompt = [
-      "Implement the following approved plan in this repository.",
-      "Make the smallest change that satisfies it. Follow existing patterns; do not touch unrelated code. Do not commit — leave changes in the working tree.",
+    const instruction = [
+      "You are the engineer. Implement the approved plan in this repository, making the",
+      "smallest change that satisfies it and following existing patterns. Actually edit",
+      "the files — do not just describe the change. Then run /review and fix what it finds.",
+      "Do not commit — leave the changes in the working tree.",
       "",
       `Request: ${job.request}`,
-      "",
       `Plan: ${JSON.stringify(job.plan, null, 2)}`,
     ].join("\n");
 
-    await note(job, "info", "builder", "implement.start", "OpenCode implementing the plan…");
-    const res = await runOpenCode(job, { modelId: job.builderModel, prompt, timeoutMs: 600_000 });
+    await note(job, "info", "builder", "implement.start", "OpenCode + gstack implementing the plan…");
+    const res = await runGstack(job, { modelId: job.builderModel, instruction, timeoutMs: 900_000 });
     if (res.code !== 0) {
       throw new Error(`OpenCode exited ${res.code}: ${(res.stderr || res.stdout).slice(0, 300)}`);
     }

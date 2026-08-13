@@ -1,20 +1,21 @@
 /**
- * OpenCode — the coding agent that actually edits files.
+ * OpenCode — the coding agent that actually edits files, driven by gstack.
  *
- * OpenCode runs headless (`opencode run`) inside the job's checkout, with
- * OpenRouter as its model provider. Two things keep it bounded:
+ * Two things this file gets right that the first cut got wrong:
  *
- *   - Everything it writes outside the repo (config, sessions, cache) is
- *     redirected into the job workspace via HOME and the XDG_* variables, so a
- *     job cannot leave state on the container or read another job's session.
- *   - The OpenRouter key is handed to it by *reference* — the generated config
- *     says `{env:OPENROUTER_API_KEY}` and we pass that one variable — so the
- *     key is never written to a file on the volume.
+ *   1. `--auto`. `opencode run` does NOT apply file edits without it — it plans
+ *      and stops, which is exactly why implementations came back +0/-0. With
+ *      `--auto` OpenCode auto-approves the edit/bash/skill permissions and does
+ *      the work non-interactively.
+ *   2. Global config. gstack installs its skills to `~/.config/opencode/skills`
+ *      at image-build time, and the OpenRouter provider config lives beside it.
+ *      So we must NOT redirect XDG_CONFIG_HOME/HOME per job (that hid the
+ *      skills); only per-job DATA and CACHE are isolated.
  *
- * OpenCode's exact flags move between versions; the binary name and the model
- * prefix are the two things that vary, and both are configurable here.
+ * The OpenRouter key is passed as one env var; the provider config references it
+ * by name, so it is never written to the volume.
  */
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "../config.ts";
 import { log } from "../logging.ts";
@@ -37,44 +38,18 @@ export async function openCodeAvailable(): Promise<boolean> {
   return availability;
 }
 
-/** Directory holding this job's agent state, always inside the workspace. */
-function agentHome(job: Job): string {
-  return join(job.workspaceDir, ".agent");
-}
-
 /**
- * Write a per-job OpenCode config selecting the OpenRouter provider, and return
- * the environment that points OpenCode at it while sandboxing its writes.
+ * Per-job environment. Config (the global `~/.config/opencode` with gstack's
+ * skills and the OpenRouter provider) is deliberately shared; only data and
+ * cache are isolated per job. The provider credential travels as one env var.
  */
 async function prepareEnv(job: Job): Promise<Record<string, string>> {
-  const home = agentHome(job);
-  const configDir = join(home, "config");
-  const opencodeDir = join(configDir, "opencode");
-  await mkdir(opencodeDir, { recursive: true });
+  const home = join(job.workspaceDir, ".agent");
   await mkdir(join(home, "data"), { recursive: true });
   await mkdir(join(home, "cache"), { recursive: true });
-
-  const opencodeConfig = {
-    $schema: "https://opencode.ai/config.json",
-    provider: {
-      openrouter: {
-        options: { apiKey: "{env:OPENROUTER_API_KEY}" },
-      },
-    },
-  };
-  await writeFile(
-    join(opencodeDir, "opencode.json"),
-    JSON.stringify(opencodeConfig, null, 2),
-    "utf8",
-  );
-
   return {
-    // Sandbox every place a CLI tends to write.
-    HOME: home,
-    XDG_CONFIG_HOME: configDir,
     XDG_DATA_HOME: join(home, "data"),
     XDG_CACHE_HOME: join(home, "cache"),
-    // The provider credential — by reference from the config above.
     OPENROUTER_API_KEY: config.openRouterApiKey ?? undefined,
   } as Record<string, string>;
 }
@@ -82,8 +57,8 @@ async function prepareEnv(job: Job): Promise<Record<string, string>> {
 export type OpenCodeResult = RunResult & { model: string };
 
 /**
- * Run OpenCode non-interactively against the job's checkout with a prompt.
- * The caller is responsible for committing whatever files OpenCode changed.
+ * Run OpenCode non-interactively against the job's checkout. `--auto` is what
+ * makes it actually edit files. The caller commits whatever it changed.
  */
 export async function runOpenCode(
   job: Job,
@@ -92,11 +67,28 @@ export async function runOpenCode(
   const env = await prepareEnv(job);
   const model = `${MODEL_PREFIX}${args.modelId}`;
   const result = await run(
-    [config.openCodeBin, "run", "--model", model, args.prompt],
-    { cwd: job.repoDir, env, timeoutMs: args.timeoutMs ?? 600_000 },
+    [config.openCodeBin, "run", "--auto", "--model", model, args.prompt],
+    { cwd: job.repoDir, env, timeoutMs: args.timeoutMs ?? 900_000 },
   );
   if (result.code !== 0) {
     log.warn("opencode run non-zero exit", { job: job.id, code: result.code });
   }
   return { ...result, model };
+}
+
+/**
+ * Run an instruction through gstack, hosted on OpenCode. gstack skills are
+ * loaded from the global config; naming them in the prompt is exactly how the
+ * gstack docs drive a headless coding session
+ * ("Load gstack. Run /autoplan, implement the plan, then run /ship").
+ */
+export async function runGstack(
+  job: Job,
+  args: { modelId: string; instruction: string; timeoutMs?: number },
+): Promise<OpenCodeResult> {
+  return runOpenCode(job, {
+    modelId: args.modelId,
+    prompt: `Load gstack. ${args.instruction}`,
+    timeoutMs: args.timeoutMs,
+  });
 }

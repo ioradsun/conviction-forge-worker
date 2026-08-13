@@ -113,19 +113,31 @@ Use a **fine-grained** personal access token restricted to `ioradsun/belief-comp
 **Contents: read/write** and **Pull requests: read/write** — enough to push the forge branch
 and open a PR, and nothing else. Do not use a broad classic token.
 
-### OpenCode & gstack
+### OpenCode & gstack — the engineer
 
-OpenCode is installed in the image. gstack is optional and hosted on OpenCode; supply its
-source at build time and it is set up with `./setup --host opencode`:
+The engineering work runs through **OpenCode driven by gstack**
+([garrytan/gstack](https://github.com/garrytan/gstack)), both installed in the image. gstack's
+skills (`/office-hours`, `/autoplan`, `/review`, `/cso`, `/qa`, `/ship`, …) register into
+OpenCode's global config via `./setup --host opencode`; the worker names them in the prompt to
+drive them headlessly ("Load gstack. … Then run /review …"), exactly as the gstack docs describe.
 
-```
-docker build --build-arg GSTACK_REPO=<git-url> --build-arg GSTACK_REF=main .
-```
+Two things this depends on:
 
-Without gstack present, the `review`/`qa` operations still run — directly through OpenCode
-with the operation's intent. OpenCode's CLI flags move between versions; the binary name
-(`OPENCODE_BIN`) and model prefix (`OPENCODE_MODEL_PREFIX`, default `openrouter/`) are the two
-knobs, centralised in `src/agent/opencode.ts`.
+- **`--auto`.** `opencode run` does *not* apply file edits without it — it plans and stops. The
+  worker always passes `--auto` (`src/agent/opencode.ts`), which is what makes the engineer
+  actually write code. (Its absence was the original "implementation: +0/−0" bug.)
+- **A capable model.** The Builder model comes from Conviction's model-config screen and is
+  passed per job. A weak model won't drive OpenCode's tool-use; pick a strong agentic-coding
+  model there.
+
+gstack's config lives at `~/.config/opencode` (shared, so its skills are found); each job gets
+its own OpenCode data/cache dir. Knobs: `OPENCODE_BIN`, `OPENCODE_MODEL_PREFIX` (default
+`openrouter/`), and `GSTACK_REF` (build-arg) to pin a gstack version.
+
+> Note: gstack's *interactive* planning skills (office-hours, design reviews) expect a human to
+> answer forcing questions, which a headless worker can't provide — so the plan/debate phases
+> use direct model calls, while the autonomous phases (implement, `/review`, `/cso`, `/qa`,
+> `/ship`) run through gstack. Live gstack behaviour can only be validated on Railway with keys.
 
 ### Config as code
 
