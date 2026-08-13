@@ -25,6 +25,7 @@ import type { Job } from "./jobs/types.ts";
 import { assertSafeBranch, computeDiff } from "./git/repo.ts";
 import { run } from "./shell.ts";
 import {
+  abortDebate,
   autopilotBuild,
   autopilotFromClone,
   checkResults,
@@ -235,12 +236,15 @@ export function buildRouter(): Router {
         message: "Plan locked.",
       });
       // In self-driving mode, a human lock resumes the pipeline: implement →
-      // verify → review → qa, up to the final approval gate. But only start it
-      // if nothing is still running — if the debate is in flight, the lock is
-      // recorded (planLockedAt) and autopilotFromClone continues into the build
-      // when the debate finishes, so we never debate and implement at once.
-      if (config.autopilot && found.job.mode !== "FAST" && !store.isRunning(found.job.id)) {
-        spawn(autopilotBuild(found.job.id));
+      // verify → review → qa, up to the final approval gate.
+      if (config.autopilot && found.job.mode !== "FAST") {
+        // If a debate is in flight, abort it now so we don't wait out the model
+        // timeout — autopilotFromClone then continues straight into the build
+        // (planLockedAt is set). If nothing was running, start the build here.
+        const abortedDebate = abortDebate(found.job.id);
+        if (!abortedDebate && !store.isRunning(found.job.id)) {
+          spawn(autopilotBuild(found.job.id));
+        }
       }
       return ok();
     }),
@@ -336,6 +340,7 @@ export function buildRouter(): Router {
     guard(async ({ params }) => {
       const found = loadJob(params.id!);
       if ("res" in found) return found.res;
+      abortDebate(found.job.id); // stop any in-flight debate model call promptly
       store.markStopped(found.job.id);
       await store.update(found.job.id, (j) => {
         if (j.status !== "completed") j.status = "cancelled";

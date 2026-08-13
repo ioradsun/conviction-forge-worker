@@ -33,7 +33,7 @@ export function openRouterConfigured(): boolean {
 export async function callModel(
   modelId: string,
   messages: ChatMessage[],
-  opts: { timeoutMs?: number; maxTokens?: number; temperature?: number } = {},
+  opts: { timeoutMs?: number; maxTokens?: number; temperature?: number; signal?: AbortSignal } = {},
 ): Promise<ModelResult> {
   const key = config.openRouterApiKey;
   if (!key) throw new OpenRouterNotConfigured();
@@ -43,11 +43,16 @@ export async function callModel(
   // Reasoning calls over repo context are slow; these run in background phases,
   // not under the 60s request cap, so give them real room.
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 240_000);
+  // Abort on either the timeout or an external signal (e.g. a plan lock that
+  // supersedes a running debate).
+  const signal = opts.signal
+    ? AbortSignal.any([opts.signal, controller.signal])
+    : controller.signal;
 
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      signal: controller.signal,
+      signal,
       headers: {
         Authorization: `Bearer ${key}`,
         "content-type": "application/json",

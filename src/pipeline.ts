@@ -203,6 +203,21 @@ export async function performBuilder(job: Job, instruction?: string): Promise<vo
 
 /* ── challenger debate ─────────────────────────────────────────────────────*/
 
+/**
+ * Per-job handle to abort the in-flight debate model call. A plan lock (or a
+ * cancel) that lands while the debate is running aborts it immediately instead
+ * of waiting out the model timeout.
+ */
+const debateAborts = new Map<string, AbortController>();
+
+/** Abort a running debate for `jobId`. Returns true if one was aborted. */
+export function abortDebate(jobId: string): boolean {
+  const controller = debateAborts.get(jobId);
+  if (!controller) return false;
+  controller.abort();
+  return true;
+}
+
 export async function performChallenger(job: Job): Promise<void> {
   store.markRunning(job.id);
   try {
@@ -225,7 +240,13 @@ export async function performChallenger(job: Job): Promise<void> {
       },
     ];
 
-    const res = await callModel(job.challengerModel, messages, { maxTokens: 3072, temperature: 0.2 });
+    const controller = new AbortController();
+    debateAborts.set(job.id, controller);
+    const res = await callModel(job.challengerModel, messages, {
+      maxTokens: 3072,
+      temperature: 0.2,
+      signal: controller.signal,
+    });
     await addCost(job, "challenger", res.inputTokens, res.outputTokens);
 
     const parsed = extractJson(res.text) as { objections?: unknown[] } | null;
@@ -252,8 +273,13 @@ export async function performChallenger(job: Job): Promise<void> {
     // job — especially once the plan is locked and implementation is underway.
     const message = err instanceof Error ? err.message : String(err);
     await store.update(job.id, (j) => settle(j, "ready", "debate"));
-    await note(job, "warn", "challenger", "debate.failed", `Challenger round did not complete: ${message}`);
+    if (store.get(job.id)?.planLockedAt) {
+      await note(job, "info", "challenger", "debate.superseded", "Debate superseded by the plan lock.");
+    } else {
+      await note(job, "warn", "challenger", "debate.failed", `Challenger round did not complete: ${message}`);
+    }
   } finally {
+    debateAborts.delete(job.id);
     store.markStopped(job.id);
   }
 }
