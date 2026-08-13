@@ -27,7 +27,7 @@ import { store } from "./jobs/store.ts";
 import type { Job, Plan, WorkerJobStatus } from "./jobs/types.ts";
 import { callModel, extractJson, openRouterConfigured } from "./agent/openrouter.ts";
 import { openCodeAvailable, runGstack } from "./agent/opencode.ts";
-import { runGstackOperation } from "./agent/gstack.ts";
+import { REVIEW_RUBRIC, runGstackOperation } from "./agent/gstack.ts";
 import { commitsAhead, computeDiff, prepareWorkspace, pushBranch, stageAndCommit } from "./git/repo.ts";
 import { createPullRequest } from "./git/github.ts";
 
@@ -325,6 +325,9 @@ export async function performImplementation(job: Job): Promise<void> {
       "",
       `Request: ${job.request}`,
       `Plan: ${JSON.stringify(job.plan, null, 2)}`,
+      "",
+      "When you run /review, hold your own change to this bar:",
+      REVIEW_RUBRIC,
     ].join("\n");
 
     await note(job, "info", "builder", "implement.start", "OpenCode + gstack implementing the plan…");
