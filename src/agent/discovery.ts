@@ -97,7 +97,13 @@ export async function buildRepoDigest(request: string): Promise<RepoDigest> {
       }
     }
 
-    const ranked = rankByRelevance(src, request).slice(0, MAX_FILES);
+    // Two ways to surface the files that matter: by their CONTENTS (the copy on
+    // screen — "the card that says X") and by their PATH. Content wins, because
+    // copy lives in the file, not the filename. This is what makes a request
+    // like "remove the thing that says X" actually findable.
+    const byContent = await contentMatches(dir, request);
+    const byPath = rankByRelevance(src, request);
+    const ranked = [...new Set([...byContent, ...byPath])].slice(0, MAX_FILES);
     for (const p of ranked) {
       try {
         const content = await readFile(join(dir, p), "utf8");
@@ -113,11 +119,40 @@ export async function buildRepoDigest(request: string): Promise<RepoDigest> {
   }
 }
 
+/**
+ * Files whose CONTENTS mention the request's keywords — how you find a component
+ * someone described by what it says on screen. Uses `git grep` over the checkout,
+ * ranked by how many distinct keywords each file contains.
+ */
+async function contentMatches(dir: string, request: string): Promise<string[]> {
+  const kw = keywords(request).slice(0, 10);
+  const hits = new Map<string, number>();
+  for (const term of kw) {
+    const r = await run(["git", "grep", "-liF", term, "--", "src"], {
+      cwd: dir,
+      timeoutMs: 20_000,
+    });
+    if (r.code !== 0) continue; // git grep exits 1 on no match; skip errors too
+    for (const p of r.stdout.split("\n").map((s) => s.trim()).filter(Boolean)) {
+      if (/\.(ts|tsx|sql)$/.test(p) && !/\.(test|spec)\./.test(p)) {
+        hits.set(p, (hits.get(p) ?? 0) + 1);
+      }
+    }
+  }
+  return [...hits.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => p);
+}
+
 /* ── The CTO ──────────────────────────────────────────────────────────────── */
 
 const CTO_PROMPT = `You are the CTO of Conviction, in an office-hours planning session with the business (the user). They tell you what they want; you turn it into a plan an engineer can build WITHOUT guessing. Conviction is a belief-market product: challenge → match → resolve → reputation → repeat.
 
-You are given a DIGEST of the ACTUAL codebase. Ground everything in it — reference real files and mechanisms, and never invent an API. Do not ask the business anything the code already answers; read it instead.
+THIS IS A PLANNING CONVERSATION, NOT A CODING SESSION. You have NO tools. You cannot read files, search the codebase, run commands, or take any action — and you must NOT pretend to. Never emit a tool call or a function call, and never say things like "let me read that file", "searching…", or "let me try again". Everything you know about the code is already in the DIGEST below: the repo map (AGENTS.md) and the files most relevant to this request, pulled for you once.
+
+You do NOT implement anything. After the business clicks Proceed, a SEPARATE engineer — with full repo access and real tools — does the work from the brief you produce. Your only job is to produce that brief through conversation.
+
+Work from the digest. If the request names on-screen text or a component and it is in the digest, name the file. If something you need is NOT in the digest, do one of two things: ask the business, or record it in "openQuestions" for the engineer to locate. Never claim you will go find it — you can't.
+
+If asked which AI model you are, do not guess: the model id is shown in the session header.
 
 Your method, every single turn:
 - Ask EXACTLY ONE question — the one that most reduces ambiguity or surfaces an edge case the business has not considered (declines, expiry, empty states, permissions, visibility, concurrency, abuse, what happens to data that already exists). One good question beats five.
@@ -126,7 +161,7 @@ Your method, every single turn:
 - Keep a running, structured plan and move at least one field forward every turn.
 - When the plan is buildable — intent is clear, the major edge cases are decided, and the acceptance criteria are concrete and testable — set "ready" to true, STOP asking questions, and tell them it is ready to hand to the pipeline.
 
-Respond with STRICT JSON ONLY — no prose outside it — in exactly this shape:
+Respond with ONLY the JSON object below — no prose before or after it, no tool calls, nothing else:
 {
   "message": "<your next message to the business; concise, may use markdown>",
   "suggestedAnswers": ["<a short answer they could click>"],
