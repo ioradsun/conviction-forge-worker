@@ -20,6 +20,7 @@ import {
   type VerificationProfileKey,
   type WorkerCheckResult,
 } from "./contract.ts";
+import { config } from "./config.ts";
 import { log } from "./logging.ts";
 import { run } from "./shell.ts";
 import { store } from "./jobs/store.ts";
@@ -435,6 +436,23 @@ export async function performChecks(job: Job, profileKey: VerificationProfileKey
     }
 
     for (const check of profile.checks) {
+      // The isolated worker can't run data-integrity checks (they need a live
+      // DB), and the app typecheck is re-run by the pull request's own CI. Skip
+      // anything outside the allowlist rather than reporting a false failure.
+      if (!config.workerChecks.includes(check)) {
+        const now = new Date().toISOString();
+        await store.update(job.id, (j) => {
+          const rec = j.checks.find((c) => c.name === check);
+          if (rec) {
+            rec.status = "skipped";
+            rec.completedAt = now;
+            rec.failureSummary = "Skipped in the worker — needs a live database, or is covered by the PR's CI.";
+          }
+        });
+        await note(job, "info", "system", "check.skipped", `${check}: skipped (not run in the worker)`);
+        continue;
+      }
+
       const startedAt = new Date().toISOString();
       await store.update(job.id, (j) => {
         const rec = j.checks.find((c) => c.name === check);

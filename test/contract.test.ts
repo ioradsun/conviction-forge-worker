@@ -82,6 +82,7 @@ beforeAll(async () => {
   process.env.REPO_URL = remoteDir;
   process.env.BASE_BRANCH = "main";
   process.env.FORGE_AUTOPILOT = "off"; // drive phases explicitly in these tests
+  process.env.FORGE_CHECKS = "check:types,lint,build"; // run all profile checks here
   delete process.env.OPENROUTER_API_KEY;
   delete process.env.GITHUB_TOKEN;
 
