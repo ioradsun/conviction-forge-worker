@@ -58,6 +58,21 @@ function prBody(job: Job): string {
       lines.push(`- ${mark} \`${c.name}\``);
     }
   }
+  // The debate's unresolved objections. When the plan was locked automatically,
+  // this is where the human meets them — so they belong in the one place a human
+  // reviews. Ordered most-severe first; resolved objections are omitted.
+  const rank = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 } as const;
+  const openObjections = job.objections
+    .filter((o) => o.status === "open")
+    .sort((a, b) => rank[a.severity] - rank[b.severity]);
+  if (openObjections.length) {
+    lines.push("");
+    lines.push("### Open objections from the debate");
+    lines.push("Raised by the Challenger and not resolved before this PR — please weigh them:");
+    for (const o of openObjections) {
+      lines.push(`- **${o.severity}** — ${o.title}`);
+    }
+  }
   return lines.join("\n");
 }
 

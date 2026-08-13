@@ -44,6 +44,13 @@ export type Config = {
   gstackDir: string;
   /** Self-driving mode: drive the pipeline to the next human gate automatically. */
   autopilot: boolean;
+  /**
+   * Full autonomy: once a plan is finalized, run all the way to an open pull
+   * request with no human gate in between — no plan lock, no pre-PR approval.
+   * The PR itself stays the one human checkpoint; the worker still never merges.
+   * A real check failure still halts (broken code is never proposed).
+   */
+  autoApprove: boolean;
   /** Verification checks the worker actually runs; others are skipped. */
   workerChecks: string[];
 };
@@ -74,6 +81,7 @@ export const config: Config = {
   openCodeBin: envOr("OPENCODE_BIN", "opencode"),
   gstackDir: envOr("GSTACK_DIR", "/opt/gstack"),
   autopilot: boolEnv("FORGE_AUTOPILOT", true),
+  autoApprove: boolEnv("FORGE_AUTO_APPROVE", false),
   // Checks the isolated worker can meaningfully run. The rest (data-integrity
   // checks that need a live DB; the app typecheck, re-run by the PR's own CI)
   // are skipped rather than failed. Override with FORGE_CHECKS="a,b,c".
