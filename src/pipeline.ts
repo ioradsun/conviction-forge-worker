@@ -12,7 +12,7 @@
  *     are written to the store as they happen, so `GET /jobs/:id` always
  *     reflects real state.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   VERIFICATION_PROFILES,
@@ -329,7 +329,9 @@ async function detectPackageManager(repoDir: string): Promise<PackageManager> {
     Bun.file(join(repoDir, f))
       .exists()
       .catch(() => false);
-  if (await exists("bun.lockb")) return { install: ["bun", "install"], runPrefix: ["bun", "run"] };
+  // bun.lockb (binary, ≤1.0) or bun.lock (text, ≥1.1) — belief-compass uses the latter.
+  if ((await exists("bun.lockb")) || (await exists("bun.lock")))
+    return { install: ["bun", "install"], runPrefix: ["bun", "run"] };
   if (await exists("pnpm-lock.yaml"))
     return { install: ["pnpm", "install", "--frozen-lockfile"], runPrefix: ["pnpm", "run"] };
   if (await exists("yarn.lock")) return { install: ["yarn", "install"], runPrefix: ["yarn", "run"] };
@@ -342,7 +344,11 @@ let depsInstalled = new Set<string>();
 
 async function ensureDependencies(job: Job, pm: PackageManager): Promise<boolean> {
   if (depsInstalled.has(job.id)) return true;
-  if (await Bun.file(join(job.repoDir, "node_modules", ".package-lock.json")).exists().catch(() => false)) {
+  // Package-manager-agnostic "already installed" marker: node_modules present.
+  const installed = await stat(join(job.repoDir, "node_modules"))
+    .then((s) => s.isDirectory())
+    .catch(() => false);
+  if (installed) {
     depsInstalled.add(job.id);
     return true;
   }
