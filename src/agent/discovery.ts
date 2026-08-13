@@ -31,6 +31,10 @@ import { callModel, extractJson, type ChatMessage } from "./openrouter.ts";
 const MAX_TREE = 260;
 const MAX_FILES = 6;
 const MAX_EXCERPT = 2600;
+/** The repo map (AGENTS.md) gets more room — it grounds every session. */
+const MAX_MAP_EXCERPT = 6000;
+/** Always read, whatever the request: the repo's own map for coding agents. */
+const MAP_FILES = ["AGENTS.md", "README.md"];
 
 /** Words too generic to steer file relevance in a product that is all about users. */
 const STOP = new Set([
@@ -80,8 +84,20 @@ export async function buildRepoDigest(request: string): Promise<RepoDigest> {
       (p) => /^src\//.test(p) && /\.(ts|tsx|sql)$/.test(p) && !/\.(test|spec)\./.test(p),
     );
 
-    const ranked = rankByRelevance(src, request).slice(0, MAX_FILES);
+    // The repo's own map (AGENTS.md) grounds the CTO every session — so it
+    // knows the app's layers and conventions — alongside the files the request
+    // points at. The map goes first.
     const files: { path: string; excerpt: string }[] = [];
+    for (const p of MAP_FILES) {
+      try {
+        const content = await readFile(join(dir, p), "utf8");
+        files.push({ path: p, excerpt: content.slice(0, MAX_MAP_EXCERPT) });
+      } catch {
+        /* not present — fine */
+      }
+    }
+
+    const ranked = rankByRelevance(src, request).slice(0, MAX_FILES);
     for (const p of ranked) {
       try {
         const content = await readFile(join(dir, p), "utf8");
