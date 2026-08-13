@@ -13,7 +13,7 @@
  *     clone of untrusted content cannot run code during our git operations.
  */
 import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { config } from "../config.ts";
 import type { DiffSummary } from "../contract.ts";
 import { log } from "../logging.ts";
@@ -111,6 +111,33 @@ export async function prepareWorkspace(job: Job): Promise<void> {
 
   assertOk(await git(job, ["checkout", "-B", job.branchName]), "git checkout -B");
   log.info("workspace prepared", { job: job.id, branch: job.branchName });
+}
+
+/**
+ * Shallow-clone the base branch into an arbitrary directory for a read-only
+ * pass — the Discovery digest. No forge branch, no job workspace; the caller
+ * removes the directory when done.
+ */
+export async function shallowCloneBase(dir: string): Promise<void> {
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { recursive: true });
+  const clone = await withRetry(() =>
+    run(
+      [
+        "git",
+        "clone",
+        "--depth",
+        "1",
+        "--single-branch",
+        "--branch",
+        config.baseBranch,
+        config.repoUrl,
+        dir,
+      ],
+      { cwd: dirname(dir), env: gitEnv(gitAuthEnv()), timeoutMs: 300_000 },
+    ),
+  );
+  assertOk(clone, "git clone (discovery digest)");
 }
 
 /** Stage everything and commit. Returns the commit sha, or null if nothing changed. */

@@ -17,12 +17,16 @@ import {
   isGstackOperation,
   isProfileKey,
   type CreateJobInput,
+  type DiscoveryMessage,
+  type RepoDigest,
 } from "./contract.ts";
 import { fail, json, ok, Router, type Ctx } from "./http.ts";
 import { store } from "./jobs/store.ts";
 import { detailOf } from "./jobs/serialize.ts";
 import type { Job } from "./jobs/types.ts";
 import { assertSafeBranch, computeDiff } from "./git/repo.ts";
+import { buildRepoDigest, discoveryTurn } from "./agent/discovery.ts";
+import { openRouterConfigured } from "./agent/openrouter.ts";
 import { run } from "./shell.ts";
 import {
   abortDebate,
@@ -88,6 +92,29 @@ function validateCreate(body: unknown): CreateJobInput | string {
   };
 }
 
+type DiscoveryTurnBody = {
+  request: string;
+  model: string;
+  digest: RepoDigest;
+  messages: DiscoveryMessage[];
+};
+
+/** Validate + normalise a discovery turn body. The digest is coerced, never trusted. */
+function validateTurn(body: unknown): DiscoveryTurnBody | string {
+  if (!body || typeof body !== "object") return "Body must be a JSON object.";
+  const b = body as Record<string, unknown>;
+  if (typeof b.request !== "string" || !b.request.trim()) return "request is required.";
+  if (typeof b.model !== "string" || !b.model) return "model is required.";
+  const d = (b.digest && typeof b.digest === "object" ? b.digest : {}) as Record<string, unknown>;
+  const digest: RepoDigest = {
+    tree: typeof d.tree === "string" ? d.tree : "",
+    files: Array.isArray(d.files) ? (d.files as RepoDigest["files"]) : [],
+    relevantPaths: Array.isArray(d.relevantPaths) ? (d.relevantPaths as string[]) : [],
+  };
+  const messages = Array.isArray(b.messages) ? (b.messages as DiscoveryMessage[]) : [];
+  return { request: b.request, model: b.model, digest, messages };
+}
+
 export function buildRouter(): Router {
   const r = new Router();
 
@@ -114,6 +141,37 @@ export function buildRouter(): Router {
         features: { openRouter: features.openRouter, github: features.github },
       }),
     ),
+  );
+
+  /* ── POST /discovery/context ───────────────────────────────────────────────
+   * The one-time code read that seeds a planning session. Synchronous: the app
+   * needs the digest before the first question, and a shallow clone + read is
+   * seconds, well under the 60s cap.
+   */
+  r.post(
+    "/discovery/context",
+    guard(async ({ body }) => {
+      const request =
+        body && typeof body === "object" ? (body as Record<string, unknown>).request : undefined;
+      if (typeof request !== "string" || !request.trim()) return fail(400, "request is required.");
+      const digest = await buildRepoDigest(request);
+      return json({ digest });
+    }),
+  );
+
+  /* ── POST /discovery/turn ──────────────────────────────────────────────────
+   * One move of the office-hours conversation: the CTO's next question and the
+   * updated plan. Synchronous — it is a single model call the app is waiting on.
+   */
+  r.post(
+    "/discovery/turn",
+    guard(async ({ body }) => {
+      if (!openRouterConfigured()) return fail(503, "OPENROUTER_API_KEY is not configured.");
+      const input = validateTurn(body);
+      if (typeof input === "string") return fail(400, input);
+      const result = await discoveryTurn(input);
+      return json(result);
+    }),
   );
 
   /* ── POST /jobs ──────────────────────────────────────────────────────────*/
