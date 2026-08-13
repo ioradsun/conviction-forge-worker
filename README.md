@@ -175,6 +175,22 @@ It never locks its own plan and never opens the PR — those stay human actions
 (`POST /jobs/:id/lock`, `POST /jobs/:id/pr`). Set `FORGE_AUTOPILOT=off` to drive every step
 by hand instead.
 
+### Full autonomy (`FORGE_AUTO_APPROVE=on`)
+
+When the plan is finalized up front (e.g. by a Discovery session), you can drop
+both human gates and let the pipeline run all the way to an open pull request:
+
+- **FAST:** plan → implement → verify → review → qa → **open PR**
+- **DEBATE / CRITICAL:** plan → debate → **auto-lock** → implement → verify → review →
+  (security) → qa → **open PR**
+
+The pull request stays the single human checkpoint — the worker still has no
+merge path, so nothing ships without a person. Two things still halt short of a
+PR rather than proposing bad work: an implementation that produced no diff, and
+a deterministic check (`lint`/`build`) that actually failed. Unresolved
+CRITICAL/HIGH objections from the debate do **not** block — they are carried
+into the PR body so the reviewer meets them there. Off by default.
+
 Progress is written to the job and exposed by `GET /jobs/:id`. The worker cannot reach
 Conviction's database, so for the Forge **UI** to reflect this live, Conviction must poll
 `GET /jobs/:id` and mirror status / plan / checks into its own tables — otherwise the work

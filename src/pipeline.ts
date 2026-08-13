@@ -602,9 +602,14 @@ async function failStep(job: Job, kind: string, err: unknown): Promise<void> {
 
 /* ── autopilot ─────────────────────────────────────────────────────────────
  * Self-driving mode. After the clone, the worker walks its own pipeline to the
- * next human gate instead of waiting to be told. It pauses exactly where a
- * person is required — the plan lock (DEBATE/CRITICAL) and the final approval
- * before a pull request — and never opens the PR itself.
+ * next human gate instead of waiting to be told.
+ *
+ * Two human gates exist — the plan lock (DEBATE/CRITICAL) and the final approval
+ * before a pull request. With `config.autoApprove` set, both are crossed
+ * automatically: once the plan is finalized the worker runs all the way to an
+ * open PR, which becomes the single human checkpoint. It still never merges, and
+ * a real check failure still halts short of the PR — broken code is never
+ * proposed. Without autoApprove, it pauses at each gate and waits for a person.
  *
  * The phases are the same `performX` functions the endpoints call, awaited in
  * sequence; between each we re-read the job (a phase mutates it) and stop early
@@ -639,13 +644,57 @@ export async function autopilotFromClone(jobId: string): Promise<void> {
   if (!alive(jobId)) return;
   // A human may have locked the plan while the debate was still running. If so,
   // continue into the build now (the /lock endpoint deliberately did NOT start
-  // it, to avoid debating and implementing at the same time); otherwise pause.
+  // it, to avoid debating and implementing at the same time).
   if (store.get(jobId)!.planLockedAt) {
+    await autopilotBuild(jobId);
+  } else if (config.autoApprove) {
+    // Full autonomy: the plan was finalized in Discovery, so no human lock is
+    // required. Record the debate's verdict, lock, and build straight through.
+    await lockPlanAutomatically(jobId);
+    if (!alive(jobId)) return;
     await autopilotBuild(jobId);
   } else {
     await store.advance(jobId, "ready", "lock");
     await note(store.get(jobId)!, "info", "human", "autopilot.awaiting_lock", "Debate complete — awaiting human plan lock before implementing.");
   }
+}
+
+/** How many objections are still open, by their blocking severity. */
+function openObjections(job: Job): { critical: number; high: number } {
+  let critical = 0;
+  let high = 0;
+  for (const o of job.objections) {
+    if (o.status !== "open") continue;
+    if (o.severity === "CRITICAL") critical++;
+    else if (o.severity === "HIGH") high++;
+  }
+  return { critical, high };
+}
+
+/**
+ * Lock the plan without a human — the auto-approve path. Mirrors the `/lock`
+ * endpoint's state change (status, phase, planLockedAt), and surfaces any open
+ * CRITICAL/HIGH objections in the log so they are not silently crossed. They do
+ * not block: unresolved objections travel to the pull request, where the human
+ * reviews them. Automatic approval is not silent approval.
+ */
+async function lockPlanAutomatically(jobId: string): Promise<void> {
+  await store.update(jobId, (j) => {
+    j.status = "plan_locked";
+    j.phase = "lock";
+    j.planLockedAt = new Date().toISOString();
+  });
+  const { critical, high } = openObjections(store.get(jobId)!);
+  const carried = critical + high;
+  await note(
+    store.get(jobId)!,
+    carried ? "warn" : "success",
+    "system",
+    "autopilot.auto_lock",
+    carried
+      ? `Plan locked automatically — ${critical} critical, ${high} high objection(s) carried to the pull request for review.`
+      : "Plan locked automatically — the debate raised no blocking objection.",
+  );
 }
 
 /** Guards the build phase so a lock and a finishing debate can't both start it. */
@@ -679,6 +728,27 @@ export async function autopilotBuild(jobId: string): Promise<void> {
 
     await performQa(store.get(jobId)!);
     if (!alive(jobId)) return;
+
+    // Full autonomy runs to an open PR — the single human checkpoint — unless a
+    // deterministic check actually failed, in which case we stop short rather
+    // than propose broken code. Everything else (advisory objections, warnings)
+    // travels to the PR for the human to weigh.
+    if (config.autoApprove) {
+      const failedCheck = store.get(jobId)!.checks.find((c) => c.status === "failed");
+      if (failedCheck) {
+        await store.advance(jobId, "ready_for_human", "human");
+        await note(store.get(jobId)!, "warn", "human", "autopilot.held", `Auto-approve held — \`${failedCheck.name}\` failed. Fix required before a pull request opens.`);
+        return;
+      }
+      await note(store.get(jobId)!, "info", "system", "autopilot.opening_pr", "Checks clean — opening the pull request automatically.");
+      try {
+        const { url } = await performPullRequest(store.get(jobId)!);
+        await note(store.get(jobId)!, "success", "system", "autopilot.pr", `Pull request opened automatically: ${url}. It is never auto-merged — the human reviews here.`);
+      } catch {
+        // performPullRequest already recorded the failure and set the job failed.
+      }
+      return;
+    }
 
     await store.advance(jobId, "ready_for_human", "human");
     await note(store.get(jobId)!, "success", "human", "autopilot.ready", "Ready for human review — approve to open the pull request.");

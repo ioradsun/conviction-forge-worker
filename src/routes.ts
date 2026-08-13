@@ -138,6 +138,8 @@ export function buildRouter(): Router {
         workspace: config.workspaceRoot,
         repo: config.repoFullName,
         baseBranch: config.baseBranch,
+        autopilot: config.autopilot,
+        autoApprove: config.autoApprove,
         features: { openRouter: features.openRouter, github: features.github },
       }),
     ),

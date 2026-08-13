@@ -1,0 +1,71 @@
+name: Deploy worker to Railway
+
+# Redeploy the worker when image-affecting files land on main. The path filter
+# mirrors railway.toml's watchPatterns, so a docs- or test-only merge does not
+# redeploy.
+#
+# This is the ALTERNATIVE to Railway's native GitHub auto-deploy — use ONE, not
+# both, or every merge deploys twice:
+#
+#   • Native (simplest): in the Railway dashboard connect this repo to the
+#     service and enable "Deploy on push" for the main branch. Then leave the
+#     RAILWAY_TOKEN secret UNSET and this workflow safely no-ops.
+#
+#   • This workflow: create a Railway *project token* (Project → Settings →
+#     Tokens) and add it as the repo secret RAILWAY_TOKEN. Optionally set the
+#     repo variable RAILWAY_SERVICE to the service's name (default below). Then
+#     turn native "Deploy on push" OFF so deploys don't double up.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Dockerfile"
+      - "package.json"
+      - "bun.lock"
+      - "tsconfig.json"
+      - "railway.toml"
+  workflow_dispatch: {}
+
+# Never let two deploys race; the newest push wins.
+concurrency:
+  group: railway-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # Secrets can't be read in a job-level `if`, so gate here: with no token
+      # set, this workflow does nothing (and native auto-deploy, if configured,
+      # is what ships the merge) rather than failing every push.
+      - name: Check for a Railway token
+        id: gate
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "${RAILWAY_TOKEN}" ]; then
+            echo "No RAILWAY_TOKEN secret — skipping (native auto-deploy handles this if enabled)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        if: steps.gate.outputs.run == 'true'
+        run: npm i -g @railway/cli
+
+      # `railway up` builds the pushed commit via the repo's Dockerfile and
+      # deploys it; `--ci` streams the build log and exits non-zero on failure.
+      # A project token implies the project + environment, so no `railway link`.
+      - name: Deploy
+        if: steps.gate.outputs.run == 'true'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE || 'conviction-forge-worker' }}
+        run: railway up --ci --service "$RAILWAY_SERVICE"
