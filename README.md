@@ -217,6 +217,17 @@ Conviction's database, so for the Forge **UI** to reflect this live, Conviction 
 still happens (visible in the worker's logs and `GET /jobs/:id`) but the UI stays where it
 was when the job was created.
 
+### On-chain contracts (optional)
+
+A worker can build Solidity too. Set `--build-arg INSTALL_FOUNDRY=true` (on Railway, an
+`INSTALL_FOUNDRY=true` service variable, which is passed through at build time) and the image
+gains Foundry — `forge`, `cast`, `anvil`. It is off by default so it adds nothing to the
+image when unused. The recommended shape is a **dedicated contracts repo**: point a worker at
+it via `REPO_FULL_NAME` and set `FORGE_CHECKS=build` (mapping to `forge build`/`forge test` in
+that repo's scripts), and have belief-compass call the deployed contract address rather than
+carrying the toolchain itself. Keeping money code in its own repo keeps the web app's build
+fast and its review surface clean.
+
 ## Bring-up order
 
 Don't start with the full loop. Bring it up one green light at a time — this is also the order

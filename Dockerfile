@@ -45,6 +45,22 @@ RUN mkdir -p /root/.config/opencode \
     && printf '%s\n' '{ "$schema": "https://opencode.ai/config.json", "provider": { "openrouter": { "options": { "apiKey": "{env:OPENROUTER_API_KEY}" } } } }' \
        > /root/.config/opencode/opencode.json
 
+# Foundry — the Solidity toolchain (forge/cast/anvil), for jobs that build or
+# test on-chain contracts. OFF by default so it adds nothing to the image when
+# unused; enable with --build-arg INSTALL_FOUNDRY=true (on Railway, set an
+# INSTALL_FOUNDRY=true service variable — it is passed through as a build arg).
+# The PATH entry is set unconditionally and harmlessly: if Foundry was not
+# installed the directory is simply empty, so `forge` is "not found" rather than
+# silently wrong. Non-fatal, like the other agent tools.
+ARG INSTALL_FOUNDRY="false"
+ENV PATH="/root/.foundry/bin:${PATH}"
+RUN if [ "$INSTALL_FOUNDRY" = "true" ] || [ "$INSTALL_FOUNDRY" = "1" ]; then \
+      { curl -L https://foundry.paradigm.xyz | bash && /root/.foundry/bin/foundryup ; } \
+        || echo "WARNING: Foundry install failed; contract build/test will report unavailable." ; \
+    else \
+      echo "Foundry install skipped (set INSTALL_FOUNDRY=true to enable)." ; \
+    fi
+
 WORKDIR /app
 
 # Dependencies first, for layer caching.
