@@ -51,6 +51,17 @@ export type Config = {
    * A real check failure still halts (broken code is never proposed).
    */
   autoApprove: boolean;
+  /**
+   * Self-repair: how many times the Builder is re-run to fix failing checks
+   * before the pipeline halts and leaves it for a human. 0 disables self-repair.
+   */
+  repairAttempts: number;
+  /**
+   * Infra resilience: how many times a killed or timed-out OpenCode run is
+   * retried before giving up. A kill (exit 137) is almost always the OOM killer,
+   * so this is deliberately small — retrying the same heavy pass just dies again.
+   */
+  runRetries: number;
   /** Verification checks the worker actually runs; others are skipped. */
   workerChecks: string[];
 };
@@ -59,6 +70,13 @@ function boolEnv(name: string, fallback: boolean): boolean {
   const v = env(name);
   if (v === undefined) return fallback;
   return !["off", "false", "0", "no"].includes(v.toLowerCase());
+}
+
+function intEnv(name: string, fallback: number): number {
+  const v = env(name);
+  if (v === undefined) return fallback;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
 export const config: Config = {
@@ -82,6 +100,8 @@ export const config: Config = {
   gstackDir: envOr("GSTACK_DIR", "/opt/gstack"),
   autopilot: boolEnv("FORGE_AUTOPILOT", true),
   autoApprove: boolEnv("FORGE_AUTO_APPROVE", false),
+  repairAttempts: intEnv("FORGE_REPAIR_ATTEMPTS", 2),
+  runRetries: intEnv("FORGE_RUN_RETRIES", 1),
   // Checks the isolated worker can meaningfully run. The rest (data-integrity
   // checks that need a live DB; the app typecheck, re-run by the PR's own CI)
   // are skipped rather than failed. Override with FORGE_CHECKS="a,b,c".

@@ -26,7 +26,7 @@ import { run } from "./shell.ts";
 import { store } from "./jobs/store.ts";
 import type { Job, Plan, WorkerJobStatus } from "./jobs/types.ts";
 import { callModel, extractJson, openRouterConfigured } from "./agent/openrouter.ts";
-import { openCodeAvailable, runGstack } from "./agent/opencode.ts";
+import { describeExit, isRetryableExit, openCodeAvailable, runGstack, type OpenCodeResult } from "./agent/opencode.ts";
 import { REVIEW_RUBRIC, runGstackOperation } from "./agent/gstack.ts";
 import { commitsAhead, computeDiff, prepareWorkspace, pushBranch, stageAndCommit } from "./git/repo.ts";
 import { createPullRequest } from "./git/github.ts";
@@ -309,7 +309,64 @@ function normalizeObjection(o: unknown, round: number, i: number): Job["objectio
 
 /* ── implementation ────────────────────────────────────────────────────────*/
 
-export async function performImplementation(job: Job): Promise<void> {
+/** Feedback that turns an implementation pass into a self-repair pass. */
+type RepairFeedback = { attempt: number; total: number; checks: WorkerCheckResult[] };
+
+/** The Builder's brief — fresh implementation, or a targeted fix of failed checks. */
+function buildInstruction(job: Job, repair?: RepairFeedback): string {
+  if (repair) {
+    const failures = repair.checks
+      .map((c) => `### ${c.name}\n${(c.failureSummary || c.outputSummary || "(no output captured)").slice(0, 1500)}`)
+      .join("\n\n");
+    return [
+      "You are the engineer. Your previous change is already in the working tree but it",
+      "FAILED verification. Fix ONLY what is needed to make these checks pass, with the",
+      "smallest change — do not revert unrelated work, do not restart from scratch, do",
+      "not commit (leave the changes in the working tree).",
+      "",
+      `Request: ${job.request}`,
+      "",
+      "The checks that failed, with their output:",
+      failures,
+      "",
+      "Hold your fix to this bar:",
+      REVIEW_RUBRIC,
+    ].join("\n");
+  }
+  return [
+    "You are the engineer. Implement the approved plan in this repository, making the",
+    "smallest change that satisfies it and following existing patterns. Actually edit",
+    "the files — do not just describe the change. Then run /review and fix what it finds.",
+    "Do not commit — leave the changes in the working tree.",
+    "",
+    `Request: ${job.request}`,
+    `Plan: ${JSON.stringify(job.plan, null, 2)}`,
+    "",
+    "When you run /review, hold your own change to this bar:",
+    REVIEW_RUBRIC,
+  ].join("\n");
+}
+
+/**
+ * Run the Builder through gstack, retrying an infrastructure failure (a kill or
+ * a timeout) a bounded number of times. A missing-tool exit is never retried —
+ * it will not self-fix — and a clean or genuine-error exit returns immediately.
+ * Retrying does not help an OOM much (the same heavy pass dies again), which is
+ * why `config.runRetries` is small; the point is to survive a transient spike.
+ */
+async function runBuilderResilient(
+  job: Job,
+  args: { modelId: string; instruction: string; timeoutMs: number },
+): Promise<OpenCodeResult> {
+  let res = await runGstack(job, args);
+  for (let retry = 1; res.code !== 0 && isRetryableExit(res.code) && retry <= config.runRetries; retry++) {
+    await note(job, "warn", "builder", "implement.retry", `${describeExit(res.code)} Retrying (${retry}/${config.runRetries})…`);
+    res = await runGstack(job, args);
+  }
+  return res;
+}
+
+export async function performImplementation(job: Job, repair?: RepairFeedback): Promise<void> {
   store.markRunning(job.id);
   try {
     if (!(await store.advance(job.id, "implementing", "implement"))) return;
@@ -317,23 +374,21 @@ export async function performImplementation(job: Job): Promise<void> {
     if (!openRouterConfigured()) return void (await notConfigured(job, "OPENROUTER_API_KEY is not configured — implementation cannot run."));
     if (!(await openCodeAvailable())) return void (await notConfigured(job, "OpenCode is not available on the worker — implementation cannot run."));
 
-    const instruction = [
-      "You are the engineer. Implement the approved plan in this repository, making the",
-      "smallest change that satisfies it and following existing patterns. Actually edit",
-      "the files — do not just describe the change. Then run /review and fix what it finds.",
-      "Do not commit — leave the changes in the working tree.",
-      "",
-      `Request: ${job.request}`,
-      `Plan: ${JSON.stringify(job.plan, null, 2)}`,
-      "",
-      "When you run /review, hold your own change to this bar:",
-      REVIEW_RUBRIC,
-    ].join("\n");
+    if (repair) {
+      await note(job, "info", "builder", "implement.repair", `Self-repair ${repair.attempt}/${repair.total}: re-running the Builder to fix ${repair.checks.length} failed check(s)…`);
+    } else {
+      await note(job, "info", "builder", "implement.start", "OpenCode + gstack implementing the plan…");
+    }
 
-    await note(job, "info", "builder", "implement.start", "OpenCode + gstack implementing the plan…");
-    const res = await runGstack(job, { modelId: job.builderModel, instruction, timeoutMs: 900_000 });
+    const res = await runBuilderResilient(job, {
+      modelId: job.builderModel,
+      instruction: buildInstruction(job, repair),
+      timeoutMs: 900_000,
+    });
     if (res.code !== 0) {
-      throw new Error(`OpenCode exited ${res.code}: ${(res.stderr || res.stdout).slice(0, 300)}`);
+      // A classified, actionable message — "killed (137), likely OOM" reads very
+      // differently from a bare exit code when a human (or the ladder) triages it.
+      throw new Error(describeExit(res.code, res.stderr || res.stdout));
     }
 
     const sha = await stageAndCommit(job, `forge: ${job.request.split("\n")[0]?.slice(0, 72) ?? "implement change"}`);
@@ -697,6 +752,35 @@ async function lockPlanAutomatically(jobId: string): Promise<void> {
   );
 }
 
+/**
+ * Self-healing for quality failures: while a deterministic check is failing,
+ * re-run the Builder with the failure fed back in — up to `config.repairAttempts`
+ * times — re-verifying after each pass. This deliberately does NOT loop on infra
+ * kills: a killed repair pass fails the job, `alive()` goes false, and we bail.
+ * If checks are still red when attempts run out, we leave it for a human rather
+ * than pretend it is fixed.
+ */
+async function selfRepairChecks(jobId: string): Promise<void> {
+  for (let attempt = 1; attempt <= config.repairAttempts; attempt++) {
+    const failed = checkResults(store.get(jobId)!).filter((c) => c.status === "failed");
+    if (failed.length === 0) return; // green — nothing to repair
+    await performImplementation(store.get(jobId)!, { attempt, total: config.repairAttempts, checks: failed });
+    if (!alive(jobId)) return; // a repair pass was killed or cancelled — stop
+    await performChecks(store.get(jobId)!, store.get(jobId)!.verificationProfile);
+    if (!alive(jobId)) return;
+  }
+  const stillFailing = checkResults(store.get(jobId)!).filter((c) => c.status === "failed");
+  if (stillFailing.length) {
+    await note(
+      store.get(jobId)!,
+      "warn",
+      "human",
+      "repair.exhausted",
+      `Self-repair exhausted after ${config.repairAttempts} attempt(s) — still failing: ${stillFailing.map((c) => c.name).join(", ")}. Leaving it for a human.`,
+    );
+  }
+}
+
 /** Guards the build phase so a lock and a finishing debate can't both start it. */
 const building = new Set<string>();
 
@@ -717,6 +801,13 @@ export async function autopilotBuild(jobId: string): Promise<void> {
 
     await performChecks(store.get(jobId)!, store.get(jobId)!.verificationProfile);
     if (!alive(jobId)) return;
+
+    // Self-heal deterministic failures before review/PR, so a fixable check
+    // never stops the pipeline on its own.
+    if (config.repairAttempts > 0) {
+      await selfRepairChecks(jobId);
+      if (!alive(jobId)) return;
+    }
 
     await performReview(store.get(jobId)!, "engineering review");
     if (!alive(jobId)) return;

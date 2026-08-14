@@ -390,3 +390,31 @@ describe("POST /jobs/:id/cancel", () => {
     expect(impl.status).toBe(409);
   });
 });
+
+describe("OpenCode exit classification — the repair ladder's branch point", () => {
+  test("maps codes to the right kind, so 137 reads as a kill and 124 as a timeout", async () => {
+    const { classifyExit, isRetryableExit, describeExit } = await import("../src/agent/opencode.ts");
+
+    // A clean exit is not a failure.
+    expect(classifyExit(0)).toBeNull();
+    // 137 = 128 + SIGKILL(9): a kill, not our timeout — almost always OOM.
+    expect(classifyExit(137)).toBe("killed");
+    expect(classifyExit(143)).toBe("killed"); // SIGTERM
+    // The worker's own timeout and missing-binary codes (see shell.ts).
+    expect(classifyExit(124)).toBe("timeout");
+    expect(classifyExit(127)).toBe("missing");
+    // A genuine non-zero from the tool itself.
+    expect(classifyExit(1)).toBe("error");
+
+    // Retry a kill/timeout/error, but never a missing tool (it won't self-fix).
+    expect(isRetryableExit(137)).toBe(true);
+    expect(isRetryableExit(124)).toBe(true);
+    expect(isRetryableExit(1)).toBe(true);
+    expect(isRetryableExit(127)).toBe(false);
+    expect(isRetryableExit(0)).toBe(false);
+
+    // The 137 message names the real cause a human (or the ladder) should act on.
+    expect(describeExit(137)).toContain("out of memory");
+    expect(describeExit(124)).toContain("timed out");
+  });
+});

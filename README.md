@@ -191,6 +191,26 @@ a deterministic check (`lint`/`build`) that actually failed. Unresolved
 CRITICAL/HIGH objections from the debate do **not** block — they are carried
 into the PR body so the reviewer meets them there. Off by default.
 
+### Self-healing (`FORGE_REPAIR_ATTEMPTS`, `FORGE_RUN_RETRIES`)
+
+Failures are triaged by *kind*, because the right response differs:
+
+- **A failing check is fixable, so the worker fixes it.** When `lint`/`build`
+  fails, the Builder is re-run with the exact failure fed back in and the change
+  re-verified — up to `FORGE_REPAIR_ATTEMPTS` times (default 2). Only if it is
+  still red at the end does the pipeline stop and leave it for a human.
+- **A killed run is not fixable by re-reasoning, so it is not looped.** An
+  OpenCode exit of **137** is a SIGKILL — inside a container, almost always the
+  **OOM killer**, not a code bug (the worker's own timeout is exit 124, a missing
+  tool 127). A kill or timeout is retried `FORGE_RUN_RETRIES` times (default 1)
+  to ride out a transient spike, then the job halts with a message that names the
+  real cause ("killed (137), almost certainly out of memory") instead of a bare
+  code. Escalating to a bigger model is deliberately *not* done here — more
+  context is more memory, which makes an OOM worse, not better.
+
+If you see 137s repeatedly, the fix is upstream of the code: give the worker
+more memory on Railway, or split the task so a single pass holds less at once.
+
 Progress is written to the job and exposed by `GET /jobs/:id`. The worker cannot reach
 Conviction's database, so for the Forge **UI** to reflect this live, Conviction must poll
 `GET /jobs/:id` and mirror status / plan / checks into its own tables — otherwise the work
