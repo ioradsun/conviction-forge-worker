@@ -56,6 +56,47 @@ async function prepareEnv(job: Job): Promise<Record<string, string>> {
 
 export type OpenCodeResult = RunResult & { model: string };
 
+/** How a non-clean OpenCode run ended — the axis the repair ladder branches on. */
+export type ExitKind = "killed" | "timeout" | "missing" | "error";
+
+/**
+ * Classify a non-zero OpenCode exit. The worker's own timeout is 124 and a
+ * missing/unspawnable binary is 127 (see shell.ts). A code ≥ 128 is death by a
+ * signal (128 + N): 137 is SIGKILL, which inside a container is almost always
+ * the OOM killer. Anything else is a genuine error exit from the tool itself.
+ * Returns null for a clean exit(0).
+ */
+export function classifyExit(code: number): ExitKind | null {
+  if (code === 0) return null;
+  if (code === 124) return "timeout";
+  if (code === 127) return "missing";
+  if (code >= 128) return "killed";
+  return "error";
+}
+
+/** A killed/timed-out run is worth retrying; a missing tool will not self-fix. */
+export function isRetryableExit(code: number): boolean {
+  const kind = classifyExit(code);
+  return kind !== null && kind !== "missing";
+}
+
+/** A human, actionable reason for a non-zero exit — what actually happened. */
+export function describeExit(code: number, detail = ""): string {
+  const tail = detail.trim() ? ` — ${detail.trim().slice(0, 300)}` : "";
+  switch (classifyExit(code)) {
+    case "killed":
+      return code === 137
+        ? `OpenCode was killed (exit 137 = SIGKILL), almost certainly out of memory. The task may be too large for a single pass, or the worker needs more memory.${tail}`
+        : `OpenCode was killed by a signal (exit ${code}).${tail}`;
+    case "timeout":
+      return `OpenCode timed out (exit 124) before finishing.${tail}`;
+    case "missing":
+      return `OpenCode could not run (exit 127) — its binary or a tool it needs is missing.${tail}`;
+    default:
+      return `OpenCode exited ${code}.${tail}`;
+  }
+}
+
 /**
  * Run OpenCode non-interactively against the job's checkout. `--auto` is what
  * makes it actually edit files. The caller commits whatever it changed.
